@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portale Gantt By_DF</title>
+  <!-- Link al manifest -->
+  <link rel="manifest" href="manifest.json">
+  <!-- Imposta il colore del tema per Android -->
+  <meta name="theme-color" content="#ADC3D9">
+
+  <!-- Inclusione del CSS di Frappe Gantt -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/frappe-gantt/0.5.0/frappe-gantt.css">
+  <style>
+    /* Stili base (rimangono invariati rispetto alla versione day-based) */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f5f5f5;
+    }
+    header {
+      background-color: #ADC3D9;
+      color: #fff;
+      padding: 15px;
+      text-align: center;
+      font-size: 1.5em;
+    }
+    .container {
+      display: flex;
+      height: calc(100vh - 60px);
+    }
+    .sidebar {
+      width: 320px;
+      background-color: #DEEDFF;
+      padding: 20px;
+      overflow-y: auto;
+      border-right: 1px solid #ccc;
+    }
+    .sidebar h2 {
+      margin-top: 0;
+      font-size: 1.2em;
+      color: #333;
+    }
+    .sidebar form input,
+    .sidebar form select,
+    .sidebar form button {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 10px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+    }
+    .sidebar form button {
+      background-color: #ADC3D9;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+    }
+    .sidebar form button:hover {
+      background-color: #8baabf;
+    }
+    .sidebar form .button-group {
+      display: flex;
+      gap: 10px;
+    }
+    .sidebar form .button-group button {
+      flex: 1;
+    }
+    .sidebar table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    .sidebar table, .sidebar th, .sidebar td {
+      border: 1px solid #ccc;
+    }
+    .sidebar th, .sidebar td {
+      padding: 5px;
+      text-align: left;
+      font-size: 0.9em;
+    }
+    .sidebar .export-btn {
+      background-color: #ADC3D9;
+      color: #fff;
+      padding: 10px;
+      border: none;
+      width: 100%;
+      margin-top: 10px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    .sidebar .export-btn:hover {
+      background-color: #8baabf;
+    }
+    .main {
+      flex: 1;
+      padding: 20px;
+      background-color: #fff;
+      overflow: auto;
+    }
+    .gantt-container {
+      display: flex;
+    }
+    .task-list-gantt {
+      width: 200px;
+      border-right: 1px solid #ADC3D9;
+      padding-right: 10px;
+      /* Se vuoi forzare l'altezza delle righe, puoi usare:
+         height: 40px; line-height: 40px; */
+    }
+    #gantt {
+      flex: 1;
+      padding-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <header>Gantt OPMS Evo</header>
+  <div class="container">
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+      <h2>Aggiungi / Modifica Attività</h2>
+      <form id="taskForm">
+        <input type="text" id="taskName" placeholder="Nome Attività" required>
+        <input type="date" id="taskStart" required>
+        <!-- Data Fine non obbligatoria -->
+        <input type="date" id="taskEnd" placeholder="Data Fine (opzionale)">
+        <input type="number" id="taskProgress" placeholder="Progress (%)" value="0" min="0" max="100" required>
+        <select id="taskDependencies">
+          <option value="">Nessuna</option>
+        </select>
+        <div class="button-group">
+          <button type="submit" id="submitButton">Aggiungi Attività</button>
+          <button type="button" id="resetButton">Clear Gantt</button>
+        </div>
+      </form>
+      <h2>Elenco Attività</h2>
+      <table id="taskList">
+        <thead>
+          <tr>
+            <th>Attività</th>
+            <th>Azioni</th>
+          </tr>
+        </thead>
+        <tbody><!-- Righe generate dinamicamente --></tbody>
+      </table>
+      <button class="export-btn" id="saveButton">Salva Lavoro</button>
+      <button class="export-btn" id="exportPngButton">Esporta come PNG</button>
+      <button class="export-btn" id="exportXlsxButton">Esporta come XLSX</button>
+    </div>
+
+    <!-- MAIN: Gantt Container -->
+    <div class="main">
+      <div class="gantt-container">
+        <div id="gantt"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Librerie: Frappe Gantt, html2canvas, SheetJS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/frappe-gantt/0.5.0/frappe-gantt.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Registrazione del Service Worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(function(registration) {
+            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+          }, function(err) {
+            console.log('ServiceWorker registration failed: ', err);
+          });
+      });
+    }
+  </script>
+
+  <script>
+    // ================================================
+    // 1) TASKS E LOCALSTORAGE
+    // ================================================
+    let tasks = [];
+    if (localStorage.getItem("ganttTasks")) {
+      tasks = JSON.parse(localStorage.getItem("ganttTasks"));
+    }
+    let editingTaskId = null;
+
+    function saveWork() {
+      localStorage.setItem("ganttTasks", JSON.stringify(tasks));
+      alert("Lavoro salvato con successo!");
+    }
+
+    function clearGantt() {
+      if (confirm("Vuoi davvero cancellare l'intero Gantt?")) {
+        tasks = [];
+        localStorage.removeItem("ganttTasks");
+        renderGantt();
+        renderTaskList();
+        updateDependencyOptions();
+        document.getElementById("taskForm").reset();
+        editingTaskId = null;
+        document.getElementById("submitButton").textContent = "Aggiungi Attività";
+      }
+    }
+
+    // ================================================
+    // 2) FORM: AGGIUNTA / MODIFICA / CANCELLAZIONE / DUPLICA
+    // ================================================
+    function updateDependencyOptions() {
+      const select = document.getElementById("taskDependencies");
+      select.innerHTML = '<option value="">Nessuna</option>';
+      tasks.forEach(task => {
+        if (editingTaskId && task.id === editingTaskId) return;
+        const option = document.createElement("option");
+        option.value = task.id;
+        option.textContent = task.name;
+        select.appendChild(option);
+      });
+      select.value = "";
+    }
+
+    function submitTask(event) {
+      event.preventDefault();
+      const name = document.getElementById("taskName").value;
+      const start = document.getElementById("taskStart").value;
+      let end = document.getElementById("taskEnd").value;
+      // Se la data di fine è vuota, imposta uguale alla data di inizio
+      if (!end) {
+        end = start;
+      }
+      const progress = parseInt(document.getElementById("taskProgress").value, 10) || 0;
+      const dependencies = document.getElementById("taskDependencies").value;
+
+      if (editingTaskId) {
+        const task = tasks.find(t => t.id === editingTaskId);
+        if (task) {
+          task.name = name;
+          task.start = start;
+          task.end = end;
+          task.progress = progress;
+          task.dependencies = dependencies;
+        }
+      } else {
+        const newTask = {
+          id: 'Task' + (tasks.length + 1),
+          name: name,
+          start: start,
+          end: end,
+          progress: progress,
+          dependencies: dependencies
+        };
+        tasks.push(newTask);
+      }
+      renderGantt();
+      renderTaskList();
+      updateDependencyOptions();
+      document.getElementById("taskForm").reset();
+      editingTaskId = null;
+      document.getElementById("submitButton").textContent = "Aggiungi Attività";
+    }
+
+    function editTask(taskId) {
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        document.getElementById("taskName").value = task.name;
+        document.getElementById("taskStart").value = task.start;
+        document.getElementById("taskEnd").value = task.end;
+        document.getElementById("taskProgress").value = task.progress;
+        editingTaskId = taskId;
+        updateDependencyOptions();
+        document.getElementById("taskDependencies").value = task.dependencies;
+        document.getElementById("submitButton").textContent = "Aggiorna Attività";
+      }
+    }
+
+    function deleteTask(taskId) {
+      tasks = tasks.filter(t => t.id !== taskId);
+      renderGantt();
+      renderTaskList();
+      updateDependencyOptions();
+      if (editingTaskId === taskId) {
+        document.getElementById("taskForm").reset();
+        editingTaskId = null;
+        document.getElementById("submitButton").textContent = "Aggiungi Attività";
+      }
+    }
+
+    function duplicateTask(taskId) {
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        const newTask = {
+          id: 'Task' + (tasks.length + 1),
+          name: task.name + " (Copia)",
+          start: task.start,
+          end: task.end,
+          progress: task.progress,
+          dependencies: task.dependencies
+        };
+        tasks.push(newTask);
+        renderGantt();
+        renderTaskList();
+        updateDependencyOptions();
+      }
+    }
+
+    // ================================================
+    // 3) RENDERING GANTT E LISTA (SIDEBAR)
+    // ================================================
+    function renderGantt() {
+      document.getElementById("gantt").innerHTML = "";
+      if (tasks.length > 0) {
+        new Gantt("#gantt", tasks, {
+          view_mode: 'Day',
+          bar_height: 20,
+          padding: 10
+        });
+      }
+    }
+
+    function renderTaskList() {
+      const tbody = document.getElementById("taskList").querySelector("tbody");
+      tbody.innerHTML = "";
+      tasks.forEach(task => {
+        const tr = document.createElement("tr");
+        const tdName = document.createElement("td");
+        tdName.textContent = task.name;
+        tr.appendChild(tdName);
+
+        const tdActions = document.createElement("td");
+        const editBtn = document.createElement("button");
+        editBtn.textContent = "Modifica";
+        editBtn.style.marginRight = "5px";
+        editBtn.addEventListener("click", () => editTask(task.id));
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.textContent = "Elimina";
+        deleteBtn.style.marginRight = "5px";
+        deleteBtn.addEventListener("click", () => deleteTask(task.id));
+
+        const duplicateBtn = document.createElement("button");
+        duplicateBtn.textContent = "Duplica";
+        duplicateBtn.addEventListener("click", () => duplicateTask(task.id));
+
+        tdActions.appendChild(editBtn);
+        tdActions.appendChild(deleteBtn);
+        tdActions.appendChild(duplicateBtn);
+        tr.appendChild(tdActions);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    // ================================================
+    // 4) ESPORTAZIONE: PNG E XLSX
+    // ================================================
+    function exportAsPNG() {
+      html2canvas(document.querySelector(".main")).then(canvas => {
+        const link = document.createElement("a");
+        link.download = "gantt_chart.png";
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+      });
+    }
+
+    function exportAsXLSX() {
+      const ws_data = [
+        ["ID", "Nome", "Data Inizio", "Data Fine", "Progress", "Dipendenze"]
+      ];
+      tasks.forEach(task => {
+        ws_data.push([
+          task.id,
+          task.name,
+          task.start,
+          task.end,
+          task.progress,
+          task.dependencies
+        ]);
+      });
+      const ws = XLSX.utils.aoa_to_sheet(ws_data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "GanttTasks");
+      XLSX.writeFile(wb, "gantt_tasks.xlsx");
+    }
+
+    // ================================================
+    // 5) EVENTI ED INIZIALIZZAZIONE
+    // ================================================
+    document.getElementById("taskForm").addEventListener("submit", submitTask);
+    document.getElementById("resetButton").addEventListener("click", clearGantt);
+    document.getElementById("saveButton").addEventListener("click", saveWork);
+    document.getElementById("exportPngButton").addEventListener("click", exportAsPNG);
+    document.getElementById("exportXlsxButton").addEventListener("click", exportAsXLSX);
+
+    // Rendering iniziale
+    renderGantt();
+    renderTaskList();
+    updateDependencyOptions();
+  </script>
+</body>
+</html>
