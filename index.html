@@ -3,16 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Portale Gantt By_DF</title>
-  <!-- Link al manifest -->
+  <title>Portale Gantt - PWA con Risorse e Zoom</title>
+  <!-- Link al manifest per la PWA -->
   <link rel="manifest" href="manifest.json">
-  <!-- Imposta il colore del tema per Android -->
   <meta name="theme-color" content="#ADC3D9">
-
-  <!-- Inclusione del CSS di Frappe Gantt -->
+  <!-- CSS di Frappe Gantt -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/frappe-gantt/0.5.0/frappe-gantt.css">
   <style>
-    /* Stili base (rimangono invariati rispetto alla versione day-based) */
+    /* Stili base e responsive */
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -28,10 +26,11 @@
     }
     .container {
       display: flex;
+      flex-wrap: wrap;
       height: calc(100vh - 60px);
     }
     .sidebar {
-      width: 320px;
+      flex: 0 0 320px;
       background-color: #DEEDFF;
       padding: 20px;
       overflow-y: auto;
@@ -93,30 +92,35 @@
     .sidebar .export-btn:hover {
       background-color: #8baabf;
     }
+    /* Pulsanti per zoom */
+    .zoom-btns {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .zoom-btns button {
+      flex: 1;
+      padding: 8px;
+      background-color: #ADC3D9;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .zoom-btns button:hover {
+      background-color: #8baabf;
+    }
     .main {
       flex: 1;
       padding: 20px;
       background-color: #fff;
       overflow: auto;
     }
-    .gantt-container {
-      display: flex;
-    }
-    .task-list-gantt {
-      width: 200px;
-      border-right: 1px solid #ADC3D9;
-      padding-right: 10px;
-      /* Se vuoi forzare l'altezza delle righe, puoi usare:
-         height: 40px; line-height: 40px; */
-    }
-    #gantt {
-      flex: 1;
-      padding-left: 10px;
-    }
+    /* Se desideri allineare le barre del Gantt, puoi regolare questi valori in renderGantt() */
   </style>
 </head>
 <body>
-  <header>Gantt OPMS Evo</header>
+  <header>Portale Gantt - PWA con Risorse e Zoom</header>
   <div class="container">
     <!-- SIDEBAR -->
     <div class="sidebar">
@@ -127,6 +131,8 @@
         <!-- Data Fine non obbligatoria -->
         <input type="date" id="taskEnd" placeholder="Data Fine (opzionale)">
         <input type="number" id="taskProgress" placeholder="Progress (%)" value="0" min="0" max="100" required>
+        <!-- Nuovo campo per assegnare la risorsa -->
+        <input type="text" id="taskResource" placeholder="Risorsa Assegnata (opzionale)">
         <select id="taskDependencies">
           <option value="">Nessuna</option>
         </select>
@@ -135,26 +141,37 @@
           <button type="button" id="resetButton">Clear Gantt</button>
         </div>
       </form>
+
+      <!-- Pulsanti Zoom -->
+      <div class="zoom-btns">
+        <button type="button" id="zoomInButton">Zoom In</button>
+        <button type="button" id="zoomOutButton">Zoom Out</button>
+      </div>
+
       <h2>Elenco Attività</h2>
       <table id="taskList">
         <thead>
           <tr>
             <th>Attività</th>
+            <th>Risorsa</th>
             <th>Azioni</th>
           </tr>
         </thead>
         <tbody><!-- Righe generate dinamicamente --></tbody>
       </table>
+
       <button class="export-btn" id="saveButton">Salva Lavoro</button>
       <button class="export-btn" id="exportPngButton">Esporta come PNG</button>
       <button class="export-btn" id="exportXlsxButton">Esporta come XLSX</button>
+      <button class="export-btn" id="exportJsonButton">Esporta come JSON</button>
+      <button class="export-btn" id="importJsonButton">Importa JSON</button>
+      <!-- File input nascosto per l'importazione JSON -->
+      <input type="file" id="importJsonInput" accept="application/json" style="display:none">
     </div>
 
     <!-- MAIN: Gantt Container -->
     <div class="main">
-      <div class="gantt-container">
-        <div id="gantt"></div>
-      </div>
+      <div id="gantt"></div>
     </div>
   </div>
 
@@ -163,13 +180,13 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
-  <!-- Registrazione del Service Worker -->
+  <!-- Registrazione del Service Worker per PWA -->
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('service-worker.js')
           .then(function(registration) {
-            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+            console.log('ServiceWorker registrato con scope: ', registration.scope);
           }, function(err) {
             console.log('ServiceWorker registration failed: ', err);
           });
@@ -178,14 +195,18 @@
   </script>
 
   <script>
-    // ================================================
-    // 1) TASKS E LOCALSTORAGE
-    // ================================================
+    /* ================================================
+       1) TASKS E LOCALSTORAGE
+    ================================================ */
     let tasks = [];
-    if (localStorage.getItem("ganttTasks")) {
+    if(localStorage.getItem("ganttTasks")) {
       tasks = JSON.parse(localStorage.getItem("ganttTasks"));
     }
     let editingTaskId = null;
+
+    /* Variabile per la visualizzazione del Gantt */
+    const viewModes = ["Day", "Week", "Month"];
+    let currentViewModeIndex = 0; // Inizia in "Day"
 
     function saveWork() {
       localStorage.setItem("ganttTasks", JSON.stringify(tasks));
@@ -193,7 +214,7 @@
     }
 
     function clearGantt() {
-      if (confirm("Vuoi davvero cancellare l'intero Gantt?")) {
+      if(confirm("Vuoi davvero cancellare l'intero Gantt?")) {
         tasks = [];
         localStorage.removeItem("ganttTasks");
         renderGantt();
@@ -205,14 +226,14 @@
       }
     }
 
-    // ================================================
-    // 2) FORM: AGGIUNTA / MODIFICA / CANCELLAZIONE / DUPLICA
-    // ================================================
+    /* ================================================
+       2) FORM: AGGIUNTA / MODIFICA / DUPLICA / CANCELLAZIONE
+    ================================================ */
     function updateDependencyOptions() {
       const select = document.getElementById("taskDependencies");
       select.innerHTML = '<option value="">Nessuna</option>';
       tasks.forEach(task => {
-        if (editingTaskId && task.id === editingTaskId) return;
+        if(editingTaskId && task.id === editingTaskId) return;
         const option = document.createElement("option");
         option.value = task.id;
         option.textContent = task.name;
@@ -226,21 +247,20 @@
       const name = document.getElementById("taskName").value;
       const start = document.getElementById("taskStart").value;
       let end = document.getElementById("taskEnd").value;
-      // Se la data di fine è vuota, imposta uguale alla data di inizio
-      if (!end) {
-        end = start;
-      }
+      if (!end) { end = start; }
       const progress = parseInt(document.getElementById("taskProgress").value, 10) || 0;
       const dependencies = document.getElementById("taskDependencies").value;
-
-      if (editingTaskId) {
+      const resource = document.getElementById("taskResource").value || "";
+      
+      if(editingTaskId) {
         const task = tasks.find(t => t.id === editingTaskId);
-        if (task) {
+        if(task) {
           task.name = name;
           task.start = start;
           task.end = end;
           task.progress = progress;
           task.dependencies = dependencies;
+          task.resource = resource;
         }
       } else {
         const newTask = {
@@ -249,7 +269,8 @@
           start: start,
           end: end,
           progress: progress,
-          dependencies: dependencies
+          dependencies: dependencies,
+          resource: resource
         };
         tasks.push(newTask);
       }
@@ -263,11 +284,12 @@
 
     function editTask(taskId) {
       const task = tasks.find(t => t.id === taskId);
-      if (task) {
+      if(task) {
         document.getElementById("taskName").value = task.name;
         document.getElementById("taskStart").value = task.start;
         document.getElementById("taskEnd").value = task.end;
         document.getElementById("taskProgress").value = task.progress;
+        document.getElementById("taskResource").value = task.resource || "";
         editingTaskId = taskId;
         updateDependencyOptions();
         document.getElementById("taskDependencies").value = task.dependencies;
@@ -280,7 +302,7 @@
       renderGantt();
       renderTaskList();
       updateDependencyOptions();
-      if (editingTaskId === taskId) {
+      if(editingTaskId === taskId) {
         document.getElementById("taskForm").reset();
         editingTaskId = null;
         document.getElementById("submitButton").textContent = "Aggiungi Attività";
@@ -289,14 +311,15 @@
 
     function duplicateTask(taskId) {
       const task = tasks.find(t => t.id === taskId);
-      if (task) {
+      if(task) {
         const newTask = {
           id: 'Task' + (tasks.length + 1),
           name: task.name + " (Copia)",
           start: task.start,
           end: task.end,
           progress: task.progress,
-          dependencies: task.dependencies
+          dependencies: task.dependencies,
+          resource: task.resource || ""
         };
         tasks.push(newTask);
         renderGantt();
@@ -305,20 +328,23 @@
       }
     }
 
-    // ================================================
-    // 3) RENDERING GANTT E LISTA (SIDEBAR)
-    // ================================================
+    /* ================================================
+       3) RENDERING DEL GANTT
+    ================================================ */
     function renderGantt() {
       document.getElementById("gantt").innerHTML = "";
-      if (tasks.length > 0) {
+      if(tasks.length > 0) {
         new Gantt("#gantt", tasks, {
-          view_mode: 'Day',
+          view_mode: viewModes[currentViewModeIndex],
           bar_height: 20,
           padding: 10
         });
       }
     }
 
+    /* ================================================
+       4) RENDERING DELLA LISTA DEI TASK (SIDEBAR)
+    ================================================ */
     function renderTaskList() {
       const tbody = document.getElementById("taskList").querySelector("tbody");
       tbody.innerHTML = "";
@@ -328,21 +354,22 @@
         tdName.textContent = task.name;
         tr.appendChild(tdName);
 
+        const tdResource = document.createElement("td");
+        tdResource.textContent = task.resource || "";
+        tr.appendChild(tdResource);
+
         const tdActions = document.createElement("td");
         const editBtn = document.createElement("button");
         editBtn.textContent = "Modifica";
         editBtn.style.marginRight = "5px";
         editBtn.addEventListener("click", () => editTask(task.id));
-
         const deleteBtn = document.createElement("button");
         deleteBtn.textContent = "Elimina";
         deleteBtn.style.marginRight = "5px";
         deleteBtn.addEventListener("click", () => deleteTask(task.id));
-
         const duplicateBtn = document.createElement("button");
         duplicateBtn.textContent = "Duplica";
         duplicateBtn.addEventListener("click", () => duplicateTask(task.id));
-
         tdActions.appendChild(editBtn);
         tdActions.appendChild(deleteBtn);
         tdActions.appendChild(duplicateBtn);
@@ -352,9 +379,9 @@
       });
     }
 
-    // ================================================
-    // 4) ESPORTAZIONE: PNG E XLSX
-    // ================================================
+    /* ================================================
+       5) ESPORTAZIONE: PNG, XLSX, JSON
+    ================================================ */
     function exportAsPNG() {
       html2canvas(document.querySelector(".main")).then(canvas => {
         const link = document.createElement("a");
@@ -366,7 +393,7 @@
 
     function exportAsXLSX() {
       const ws_data = [
-        ["ID", "Nome", "Data Inizio", "Data Fine", "Progress", "Dipendenze"]
+        ["ID", "Nome", "Data Inizio", "Data Fine", "Progress", "Dipendenze", "Risorsa"]
       ];
       tasks.forEach(task => {
         ws_data.push([
@@ -375,7 +402,8 @@
           task.start,
           task.end,
           task.progress,
-          task.dependencies
+          task.dependencies,
+          task.resource || ""
         ]);
       });
       const ws = XLSX.utils.aoa_to_sheet(ws_data);
@@ -384,14 +412,73 @@
       XLSX.writeFile(wb, "gantt_tasks.xlsx");
     }
 
-    // ================================================
-    // 5) EVENTI ED INIZIALIZZAZIONE
-    // ================================================
+    function exportAsJSON() {
+      const jsonData = JSON.stringify(tasks, null, 2);
+      const blob = new Blob([jsonData], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "gantt_tasks.json";
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function importJSON(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const importedTasks = JSON.parse(e.target.result);
+          if (Array.isArray(importedTasks)) {
+            tasks = importedTasks;
+            renderGantt();
+            renderTaskList();
+            updateDependencyOptions();
+            localStorage.setItem("ganttTasks", JSON.stringify(tasks));
+            alert("Importazione completata!");
+          } else {
+            alert("Il file JSON non contiene un array valido di task.");
+          }
+        } catch (err) {
+          alert("Errore nella lettura del file JSON.");
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    /* ================================================
+       6) FUNZIONALITÀ ZOOM IN / ZOOM OUT
+    ================================================ */
+    function zoomIn() {
+      if(currentViewModeIndex > 0) {
+        currentViewModeIndex--;
+        renderGantt();
+      }
+    }
+
+    function zoomOut() {
+      if(currentViewModeIndex < viewModes.length - 1) {
+        currentViewModeIndex++;
+        renderGantt();
+      }
+    }
+
+    /* ================================================
+       7) EVENTI ED INIZIALIZZAZIONE
+    ================================================ */
     document.getElementById("taskForm").addEventListener("submit", submitTask);
     document.getElementById("resetButton").addEventListener("click", clearGantt);
     document.getElementById("saveButton").addEventListener("click", saveWork);
     document.getElementById("exportPngButton").addEventListener("click", exportAsPNG);
     document.getElementById("exportXlsxButton").addEventListener("click", exportAsXLSX);
+    document.getElementById("exportJsonButton").addEventListener("click", exportAsJSON);
+    document.getElementById("importJsonButton").addEventListener("click", function() {
+      document.getElementById("importJsonInput").click();
+    });
+    document.getElementById("importJsonInput").addEventListener("change", importJSON);
+    document.getElementById("zoomInButton").addEventListener("click", zoomIn);
+    document.getElementById("zoomOutButton").addEventListener("click", zoomOut);
 
     // Rendering iniziale
     renderGantt();
